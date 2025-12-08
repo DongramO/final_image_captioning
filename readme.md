@@ -22,3 +22,5 @@ Encoder & Decoder 2단계로 구분
     - https://www.kaggle.com/datasets/adityajn105/flickr8k
 - 데이터가 부족한 경우 kaggle에서 제공하는 MS COCO dataset 추가 활용
     - (https://www.kaggle.com/datasets?search=MS+COCO)
+
+
