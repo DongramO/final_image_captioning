@@ -10,3 +10,50 @@ logs/
 # 환경 설정 파일 제외
 .env
 config/local.json
+
+# Python 관련
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+venv/
+env/
+ENV/
+.venv
+
+# 데이터 파일 (용량이 크므로 제외)
+data/raw/
+data/processed/
+*.pkl
+*.h5
+*.hdf5
+
+# 모델 체크포인트 (용량이 크므로 선택적 제외)
+checkpoints/*.pth
+checkpoints/*.pt
+checkpoints/*.ckpt
+!checkpoints/.gitkeep
+
+# 결과물 (선택적 제외)
+outputs/
+!outputs/.gitkeep
+
+# IDE 관련
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# OS 관련
+.DS_Store
+Thumbs.db
+
+# Jupyter Notebook
+.ipynb_checkpoints/
+*.ipynb
+
+# 기타
+*.pth.tar
+wandb/
