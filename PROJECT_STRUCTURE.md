@@ -91,15 +91,16 @@ final_image_captioning/
 5. **추론**: `inference.py`로 새로운 이미지에 대한 캡션 생성
 
 
-전체 프로젝트 아키텍처 개요
+# <b>전체 프로젝트 아키텍처 개요<b>
 
-1. 전체 데이터 흐름 (End-to-End Pipeline)
+## 1. 전체 데이터 흐름 (End-to-End Pipeline)
 [원본 데이터] 
     ↓
 [전처리 단계] → [데이터셋 로더] → [모델 학습] → [평가/추론]
 
-2. 단계별 상세 흐름
-Phase 1: 데이터 준비 및 전처리
+## 2. 단계별 상세 흐름
+### Phase 1: 데이터 준비 및 전처리
+```
 data/raw/ (원본 이미지 + 캡션 텍스트)
     ↓
 utils/tokenizer.py → 텍스트를 토큰으로 분리
@@ -110,25 +111,28 @@ utils/image_utils.py → 이미지 리사이즈, 정규화
     ↓
 data/processed/ (전처리된 데이터)
 data/vocab/ (단어장 파일 저장)
+```
 
 주요 작업:
 이미지: 224x224 리사이즈, ImageNet 정규화
 텍스트: 토큰화 → 단어장 구축 → 인덱스 변환
 특수 토큰: <pad>, <unk>, <sos>, <eos>
 
-Phase 2: 데이터셋 로딩
+### Phase 2: 데이터셋 로딩
+```
 datasets/flickr8k.py 또는 datasets/coco.py
     ↓
 DataLoader (배치 생성)
     ↓
 [이미지 텐서, 캡션 텐서, 길이 정보]
+```
 
 역할:
 Flickr8kDataset / CocoDataset: PyTorch Dataset 상속
 __getitem__(): 이미지와 캡션을 텐서로 반환
 배치 단위로 데이터 제공
 
-Phase 3: 모델 아키텍처 (Encoder-Decoder)
+### Phase 3: 모델 아키텍처 (Encoder-Decoder)
 입력 이미지 [B, 3, 224, 224]
     ↓
 ┌─────────────────────────────────┐
@@ -152,7 +156,8 @@ ImageEncoder: CNN으로 이미지 → 특징 벡터
 CaptionDecoder: LSTM으로 특징 벡터 → 캡션 시퀀스
 ImageCaptionModel: 두 모듈 통합
 
-Phase 4: 학습 과정 (train.py - backward 포함)
+### Phase 4: 학습 과정 (train.py - backward 포함)
+```
 for epoch in range(num_epochs):
     for batch in dataloader:
         # 1. Forward Pass
@@ -167,6 +172,7 @@ for epoch in range(num_epochs):
         
         # 3. 가중치 업데이트
         optimizer.step()
+```
 
 학습 설정:
 손실 함수: CrossEntropyLoss (단어 예측)
@@ -199,7 +205,7 @@ modules/evaluation.py
     ↓
 BLEU, METEOR, ROUGE, CIDEr 점수
 
-3. 모듈 간 의존성 관계
+## 3. 모듈 간 의존성 관계
 main.py / train.py
     ├── models/image_caption_model.py
     │   ├── modules/encoder.py
@@ -214,7 +220,8 @@ main.py / train.py
     │
     └── config/config.yaml
 
-4. 파일별 역할 요약
+## 4. 파일별 역할 요약
+```
 파일/모듈	역할	주요 함수/클래스
 train.py	학습 스크립트	학습 루프, backward 호출
 inference.py	추론 스크립트	캡션 생성
@@ -227,15 +234,16 @@ utils/vocabulary.py	단어장 관리	Vocabulary
 utils/tokenizer.py	텍스트 토큰화	Tokenizer
 utils/image_utils.py	이미지 전처리	ImageUtils
 config/config.yaml	설정 파일	하이퍼파라미터
+```
 
-5. 실행 흐름 예시
-# 1. 데이터 준비vocab = Vocabulary()vocab.build_vocab(all_captions)  # 단어장 구축
-# 2. 데이터셋 생성dataset = Flickr8kDataset(image_dir, captions_file, transform, vocab)dataloader = DataLoader(dataset, batch_size=32)
-# 3. 모델 생성encoder = ImageEncoder('resnet50', embed_size=256)decoder = CaptionDecoder(embed_size=256, hidden_size=512, vocab_size=len(vocab))model = ImageCaptionModel(encoder, decoder, len(vocab))
-# 4. 학습train(model, dataloader, ...)  # backward 포함
-# 5. 추론caption = model.generate_caption(image, vocab)
+## 5. 실행 흐름 예시
+### 1. 데이터 준비vocab = Vocabulary()vocab.build_vocab(all_captions)  # 단어장 구축
+### 2. 데이터셋 생성dataset = Flickr8kDataset(image_dir, captions_file, transform, vocab)dataloader = DataLoader(dataset, batch_size=32)
+### 3. 모델 생성encoder = ImageEncoder('resnet50', embed_size=256)decoder = CaptionDecoder(embed_size=256, hidden_size=512, vocab_size=len(vocab))model = ImageCaptionModel(encoder, decoder, len(vocab))
+### 4. 학습train(model, dataloader, ...)  # backward 포함
+### 5. 추론caption = model.generate_caption(image, vocab)
 
-6. 핵심 설계 원칙
+## 6. 핵심 설계 원칙
 모듈화: Encoder/Decoder 분리
 재사용성: 데이터셋 로더를 여러 데이터셋에 적용
 확장성: 설정 파일로 하이퍼파라미터 관리
