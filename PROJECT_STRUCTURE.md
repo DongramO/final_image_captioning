@@ -181,6 +181,7 @@ for epoch in range(num_epochs):
 체크포인트: checkpoints/에 저장
 
 ### Phase 5: 추론 과정 (inference.py)
+```
 새로운 이미지
     ↓
 ImageEncoder → 이미지 특징
@@ -192,20 +193,23 @@ CaptionDecoder.sample() → Greedy/Beam Search
 Vocabulary.decode() → 단어 리스트
     ↓
 생성된 캡션 문자열
-
+```
 추론 특징 : 
 model.eval(): 평가 모드
 torch.no_grad(): 그래디언트 계산 비활성화
 Beam Search 또는 Greedy Search로 캡션 생성
 
 ### Phase 6: 평가 (evaluate.py)
+```
 생성된 캡션 vs 참조 캡션
     ↓
 modules/evaluation.py
     ↓
 BLEU, METEOR, ROUGE, CIDEr 점수
+```
 
 ## 3. 모듈 간 의존성 관계
+```
 main.py / train.py
     ├── models/image_caption_model.py
     │   ├── modules/encoder.py
@@ -219,7 +223,7 @@ main.py / train.py
     ├── utils/logger.py
     │
     └── config/config.yaml
-
+```
 ## 4. 파일별 역할 요약
 ```
 파일/모듈	역할	주요 함수/클래스
@@ -237,12 +241,13 @@ config/config.yaml	설정 파일	하이퍼파라미터
 ```
 
 ## 5. 실행 흐름 예시
-### 1. 데이터 준비vocab = Vocabulary()vocab.build_vocab(all_captions)  # 단어장 구축
-### 2. 데이터셋 생성dataset = Flickr8kDataset(image_dir, captions_file, transform, vocab)dataloader = DataLoader(dataset, batch_size=32)
-### 3. 모델 생성encoder = ImageEncoder('resnet50', embed_size=256)decoder = CaptionDecoder(embed_size=256, hidden_size=512, vocab_size=len(vocab))model = ImageCaptionModel(encoder, decoder, len(vocab))
-### 4. 학습train(model, dataloader, ...)  # backward 포함
-### 5. 추론caption = model.generate_caption(image, vocab)
-
+```
+1. 데이터 준비vocab = Vocabulary()vocab.build_vocab(all_captions)  # 단어장 구축
+2. 데이터셋 생성dataset = Flickr8kDataset(image_dir, captions_file, transform, vocab)dataloader = DataLoader(dataset, batch_size=32)
+3. 모델 생성encoder = ImageEncoder('resnet50', embed_size=256)decoder = CaptionDecoder(embed_size=256, hidden_size=512, vocab_size=len(vocab))model = ImageCaptionModel(encoder, decoder, len(vocab))
+4. 학습train(model, dataloader, ...)  # backward 포함
+5. 추론caption = model.generate_caption(image, vocab)
+```
 ## 6. 핵심 설계 원칙
 모듈화: Encoder/Decoder 분리
 재사용성: 데이터셋 로더를 여러 데이터셋에 적용
