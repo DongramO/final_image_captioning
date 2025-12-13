@@ -57,3 +57,5 @@ Thumbs.db
 # 기타
 *.pth.tar
 wandb/
+
+/datasets/data/
