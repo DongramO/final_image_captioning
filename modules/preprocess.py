@@ -15,7 +15,7 @@ def preprocess_datasets(image_size: Tuple[int, int] = (224, 224), tokenizer=None
     dataset = Flickr8kDataset() 
 
     if dataset.dataset_type == "flickr8k":
-        # preprocess_image(dataset, image_size)
+        preprocess_image(dataset, image_size)
         preprocess_text(dataset, tokenizer, vocab)
 
 
@@ -27,4 +27,4 @@ def preprocess_text(dataobject, tokenizer=None, vocab=None) -> List[int]:
     dataobject.load_captions_to_df()
 
 
-preprocess_datasets()
+# preprocess_datasets()

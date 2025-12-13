@@ -10,6 +10,8 @@ from typing import List, Tuple
 import re
 from collections import Counter
 import json
+import os, glob
+from torch.utils.data import Dataset
 
 _ROOT = os.path.dirname(os.path.dirname(__file__))
 class Flickr8kDataset():
@@ -97,6 +99,8 @@ class Flickr8kDataset():
         
         
     def load_captions_to_df(self):
+        os.makedirs(self.caption_out_dir, exist_ok=True)
+
         with open(self.caption_file, "r") as f:
             for _ in range(5):
                 print(f.readline().strip())
@@ -167,14 +171,14 @@ class Flickr8kDataset():
         final_df = df[["image", "caption_padded"]]
         final_df.head()
         
-        final_df.to_csv(self.caption_out_dir + "/captions_padded.csv", index=False)
-        with open(self.caption_out_dir+"/word2idx.json", "w") as f:
+        final_df.to_csv(os.path.join(self.caption_out_dir, "captions_padded.csv"), index=False)
+
+        with open(os.path.join(self.caption_out_dir, "word2idx.json"), "w") as f:
             json.dump(word2idx, f, ensure_ascii=False, indent=2)
 
-        with open(self.caption_out_dir+"/idx2word.json", "w") as f:
+        with open(os.path.join(self.caption_out_dir, "idx2word.json"), "w") as f:
             json.dump(idx2word, f, ensure_ascii=False, indent=2)
 
-        return final_df
 
     @staticmethod
     def pad_sequence(seq, max_len, pad_idx):
@@ -206,3 +210,32 @@ class Flickr8kDataset():
         indices.append(word2idx["<end>"])
         
         return indices
+
+
+class Flickr8kImageOnlyDataset(Dataset):
+    def __init__(self, image_dir, transform=None):
+        self.image_dir = image_dir
+        self.transform = transform
+        
+        # os.listdir 사용 (Windows에서 더 안정적)
+        if not os.path.exists(image_dir):
+            raise ValueError(f"이미지 디렉토리가 존재하지 않습니다: {image_dir}")
+        
+        all_files = os.listdir(image_dir)
+        image_extensions = {'.jpg', '.jpeg', '.png', '.JPG', '.JPEG', '.PNG'}
+        
+        self.image_paths = sorted([
+            os.path.join(image_dir, f) 
+            for f in all_files 
+            if os.path.splitext(f)[1].lower() in {ext.lower() for ext in image_extensions}
+        ])
+    def __len__(self):
+        return len(self.image_paths)
+
+    def __getitem__(self, idx):
+        path = self.image_paths[idx]
+        img = Image.open(path).convert("RGB")
+        if self.transform:
+            img = self.transform(img)
+        return img, path
+
