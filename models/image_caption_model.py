@@ -1,217 +1,287 @@
 """
 이미지 캡셔닝 통합 모델
+
+변경점(Attention alpha 저장/시각화 준비):
+- encoder 출력이 (global, spatial, (H,W)) 형태면 spatial을 decoder에 encoder_out으로 전달
+- generate_caption()에서 return_attention=True일 때, 각 토큰별 alpha를 함께 반환
 """
 
 import torch
 import torch.nn as nn
-from modules.decoder import CaptionDecoder
 
 
 class ImageCaptionModel(nn.Module):
     """
     Encoder-Decoder 구조의 이미지 캡셔닝 모델
     """
-    
+
     def __init__(self, encoder, decoder, vocab_size, embed_size=256, hidden_size=512):
-        """
-        Args:
-            encoder: 이미지 인코더 모델 (예: ResNet)
-            decoder: 캡션 디코더 모델 (CaptionDecoder)
-            vocab_size: 단어장 크기
-            embed_size: 임베딩 차원 (이미지 특징 차원)
-            hidden_size: 히든 상태 차원
-        """
         super(ImageCaptionModel, self).__init__()
         self.encoder = encoder
         self.decoder = decoder
         self.vocab_size = vocab_size
         self.embed_size = embed_size
         self.hidden_size = hidden_size
-        
+
     def forward(self, images, captions=None):
-        """
-        학습 시 사용: 이미지와 캡션을 받아서 다음 단어를 예측
-        
-        Args:
-            images: 입력 이미지 텐서 [batch_size, channels, height, width]
-            captions: 캡션 텐서 [batch_size, seq_length] (<start> 토큰 포함, <end> 토큰 제외)
-            
-        Returns:
-            outputs: 생성된 캡션 로짓 [batch_size, seq_length-1, vocab_size]
-        """
-        # 1. 이미지 인코딩
-        features = self.encoder(images)  # [batch_size, embed_size]
-        
-        # 2. 캡션 디코딩 (Teacher Forcing)
+        # 1) 이미지 인코딩
+        encoded = self.encoder(images)
+
+        # encoder가 attention용 spatial을 같이 주는 경우
+        encoder_out = None
+        if isinstance(encoded, (tuple, list)) and len(encoded) >= 2:
+            features = encoded[0]
+            encoder_out = encoded[1]
+        else:
+            features = encoded
+
+        # 2) 디코딩(Teacher Forcing)
         if captions is None:
             raise ValueError("학습 시에는 captions가 필요합니다.")
-        
-        outputs = self.decoder(features, captions)  # [batch_size, seq_length-1, vocab_size]
-        
+        outputs = self.decoder(features, captions, encoder_out=encoder_out)  # [B, T, vocab]
         return outputs
-    
-    def generate_caption(self, images, idx2word, max_length=50, start_token=1, end_token=2, beam_size=1):
+
+    def generate_caption(
+        self,
+        images,
+        idx2word,
+        max_length=50,
+        start_token=1,
+        end_token=2,
+        beam_size=1,
+        show_topk=True,
+        temperature=1.0,
+        sample=False,          # True면 sampling(multinomial), False면 greedy(argmax)
+        topk=10,
+        return_attention=False,
+        repetition_penalty=1.2,  # 반복 억제 강도 (1.0 = 없음, >1.0 = 억제)
+        no_repeat_ngram_size=3,   # N-gram 반복 방지 (최근 N개 단어)
+        use_topk_sampling=False,  # Top-k sampling 사용 여부
+    ):
         """
         추론 시 사용: 이미지로부터 캡션 생성
-        
-        Args:
-            images: 입력 이미지 텐서 [batch_size, channels, height, width] 또는 [1, channels, height, width]
-            idx2word: 인덱스를 단어로 변환하는 딕셔너리
-            max_length: 최대 생성 길이
-            start_token: 시작 토큰 인덱스
-            end_token: 종료 토큰 인덱스
-            beam_size: Beam search 크기 (1이면 Greedy search)
-            
-        Returns:
-            captions: 생성된 캡션 리스트 (문자열 리스트)
+
+        return_attention=True이면:
+        - caption_strings: List[str]
+        - attn_info: List[dict]
+            {
+              "words": List[str],            # 최종 캡션에 포함된 단어들
+              "alphas": List[Tensor],        # 각 단어별 alpha, shape [P]
+              "spatial_hw": (H, W) or None,  # encoder layer4 map 크기
+            }
         """
         self.eval()
-        
         with torch.no_grad():
-            # 배치 차원 확인
             if images.dim() == 3:
                 images = images.unsqueeze(0)  # [1, C, H, W]
-            
-            batch_size = images.size(0)
+
             device = images.device
-            
-            # 1. 이미지 인코딩
-            features = self.encoder(images)  # [batch_size, embed_size]
-            
-            # 2. Greedy search 또는 Beam search로 캡션 생성
-            if beam_size == 1:
-                captions = self._greedy_search(
-                    features, max_length, start_token, end_token, device
-                )
+            encoded = self.encoder(images)
+
+            encoder_out = None
+            spatial_hw = None
+            if isinstance(encoded, (tuple, list)) and len(encoded) >= 2:
+                features = encoded[0]
+                encoder_out = encoded[1]
+                if len(encoded) >= 3:
+                    spatial_hw = encoded[2]
             else:
-                captions = self._beam_search(
-                    features, max_length, start_token, end_token, beam_size, device
-                )
-            
-            # 3. 인덱스를 단어로 변환
+                features = encoded
+
+            if beam_size != 1:
+                # beam은 미구현: 필요하면 붙이는게 맞고, 지금은 greedy/sampling으로 통일
+                pass
+
+            captions, attn_raw = self._greedy_search(
+                features=features,
+                encoder_out=encoder_out,
+                max_length=max_length,
+                start_token=start_token,
+                end_token=end_token,
+                device=device,
+                idx2word=idx2word,
+                show_topk=show_topk,
+                topk=topk,
+                temperature=temperature,
+                sample=sample,
+                return_attention=return_attention,
+                repetition_penalty=repetition_penalty,
+                no_repeat_ngram_size=no_repeat_ngram_size,
+                use_topk_sampling=use_topk_sampling,
+            )
+
             caption_strings = []
-            for caption in captions:
-                words = []
-                # 텐서를 리스트로 변환
+            attn_info = []
+
+            for b, caption in enumerate(captions):
                 if isinstance(caption, torch.Tensor):
                     caption = caption.cpu().tolist()
-                
-                for idx in caption:
+
+                words = []
+                alphas = []
+
+                # attn_raw[b]는 step별 alpha 리스트
+                raw_alphas = attn_raw[b] if (return_attention and attn_raw is not None) else None
+
+                # caption = [<start>, w1, w2, ..., <end>, ...]
+                # raw_alphas는 w1, w2, ... 생성 시점의 alpha에 대응 (len ~= caption_len-1)
+                alpha_step = 0
+                for idx in caption[1:]:  # start 제외
+                    idx = int(idx)
                     if idx == end_token:
                         break
-                    if idx == start_token:
+
+                    word = idx2word.get(idx, "<unk>")
+
+                    # special token은 캡션 표시에서 제외
+                    if word in ["<pad>", "<start>", "<end>"]:
+                        alpha_step += 1
                         continue
-                    
-                    # 인덱스 타입 확인 및 변환
-                    idx = int(idx)
-                    
-                    # 디버깅: 예측된 인덱스 확인
-                    if len(words) == 0:  # 첫 번째 예측만 출력
-                        print(f"  [디버깅] 예측된 인덱스: {idx}, vocab_size: {self.vocab_size}")
-                        print(f"  [디버깅] idx2word에 있는지: {idx in idx2word}")
-                        if idx not in idx2word and idx < len(idx2word):
-                            print(f"  [디버깅] idx2word 키 타입: {type(list(idx2word.keys())[0])}")
-                    
-                    if idx in idx2word:
-                        word = idx2word[idx]
-                        if word not in ['<pad>', '<start>', '<end>', '<unk>']:
-                            words.append(word)
-                    else:
-                        # 인덱스가 범위를 벗어난 경우
-                        if idx >= self.vocab_size:
-                            print(f"  [경고] 인덱스 {idx}가 vocab_size {self.vocab_size}를 초과합니다!")
-                        words.append('<unk>')
-                
-                caption_strings.append(' '.join(words) if words else '<unk>')
-            
+
+                    if return_attention and raw_alphas is not None and alpha_step < len(raw_alphas):
+                        alphas.append(raw_alphas[alpha_step].detach().cpu())  # [P]
+                    alpha_step += 1
+                    words.append(word)
+
+                caption_strings.append(" ".join(words) if words else "<unk>")
+
+                if return_attention:
+                    attn_info.append({
+                        "words": words,
+                        "alphas": alphas,
+                        "spatial_hw": spatial_hw,
+                    })
+
+            if return_attention:
+                return caption_strings, attn_info
             return caption_strings
-    
-    def _greedy_search(self, features, max_length, start_token, end_token, device):
+
+    def _greedy_search(
+        self,
+        features,
+        encoder_out,
+        max_length,
+        start_token,
+        end_token,
+        device,
+        idx2word=None,
+        show_topk=False,
+        topk=10,
+        temperature=1.0,
+        sample=False,
+        return_attention=False,
+        repetition_penalty=1.2,
+        no_repeat_ngram_size=3,
+        use_topk_sampling=False,
+    ):
         """
-        Greedy search로 캡션 생성
-        
-        Args:
-            features: 이미지 특징 [batch_size, embed_size]
-            max_length: 최대 생성 길이
-            start_token: 시작 토큰 인덱스
-            end_token: 종료 토큰 인덱스
-            device: 디바이스
-            
-        Returns:
-            captions: 생성된 캡션 인덱스 리스트 [batch_size, seq_length]
+        Greedy / Sampling 공용 디코딩
+        - sample=False: greedy(argmax)
+        - sample=True : multinomial sampling
+        - use_topk_sampling=True: top-k 중에서만 선택
         """
         batch_size = features.size(0)
-        
-        # 초기 상태 설정
-        h_states, c_states = self.decoder.init_hidden_state(features)
-        
-        # 시작 토큰으로 초기화
-        inputs = torch.full((batch_size,), start_token, dtype=torch.long, device=device)
-        
-        captions = []
-        for _ in range(batch_size):
-            captions.append([start_token])
-        
-        # 각 샘플별로 독립적으로 생성
-        for batch_idx in range(batch_size):
-            h_batch = [h[batch_idx:batch_idx+1] for h in h_states]  # [1, hidden_size]
-            c_batch = [c[batch_idx:batch_idx+1] for c in c_states]  # [1, hidden_size]
-            feat_batch = features[batch_idx:batch_idx+1]  # [1, embed_size]
-            
-            current_input = torch.tensor([start_token], dtype=torch.long, device=device)
-            
-            for _ in range(max_length):
-                # 현재 입력 임베딩
-                x_t = self.decoder.embedding(current_input)  # [1, embed_size]
-                
-                # 각 레이어를 순차적으로 통과
-                for layer_idx in range(self.decoder.num_layers):
-                    h_batch[layer_idx], c_batch[layer_idx] = self.decoder.lstm_cells[layer_idx](
-                        x_t, h_batch[layer_idx], c_batch[layer_idx]
-                    )
-                    x_t = h_batch[layer_idx]
-                
-                # 출력 로짓
-                outputs = self.decoder.linear(h_batch[-1])  # [1, vocab_size]
-                
-                # Greedy: 가장 높은 확률의 단어 선택
-                predicted = outputs.argmax(1)  # [1]
-                predicted_idx = predicted.item()
-                
-                captions[batch_idx].append(predicted_idx)
-                
-                # <end> 토큰이 나오면 종료
-                if predicted_idx == end_token:
-                    break
-                
-                # 다음 입력으로 사용
-                current_input = predicted
-        
-        # 텐서로 변환
-        max_len = max(len(c) for c in captions)
-        caption_tensors = []
-        for caption in captions:
-            padded = caption + [end_token] * (max_len - len(caption))
-            caption_tensors.append(padded[:max_len])
-        
-        return torch.tensor(caption_tensors, dtype=torch.long, device=device)
-    
-    def _beam_search(self, features, max_length, start_token, end_token, beam_size, device):
-        """
-        Beam search로 캡션 생성 (간단한 구현)
-        
-        Args:
-            features: 이미지 특징 [batch_size, embed_size]
-            max_length: 최대 생성 길이
-            start_token: 시작 토큰 인덱스
-            end_token: 종료 토큰 인덱스
-            beam_size: Beam search 크기
-            device: 디바이스
-            
-        Returns:
-            captions: 생성된 캡션 인덱스 리스트 [batch_size, seq_length]
-        """
-        # 간단한 구현: 현재는 Greedy search와 동일하게 처리
-        # 나중에 더 정교한 Beam search 구현 가능
-        return self._greedy_search(features, max_length, start_token, end_token, device)
+        print(f"[DEBUG] temperature={temperature}, sample={sample}, topk={topk}, repetition_penalty={repetition_penalty}, no_repeat_ngram={no_repeat_ngram_size}")
 
+        # 초기 상태
+        h_states, c_states = self.decoder.init_hidden_state(features)
+
+        captions = [[start_token] for _ in range(batch_size)]
+        attn_per_sample = [[] for _ in range(batch_size)] if return_attention else None
+
+        for b in range(batch_size):
+            h = [hs[b:b+1].contiguous() for hs in h_states]  # [1, H]
+            c = [cs[b:b+1].contiguous() for cs in c_states]  # [1, H]
+
+            enc_b = encoder_out[b:b+1] if encoder_out is not None else None
+
+            current = torch.tensor([start_token], dtype=torch.long, device=device)  # [1]
+
+            for step in range(max_length):
+                word_embed = self.decoder.embedding(current)  # [1, E]
+
+                logits, h, c, alpha = self.decoder.step(
+                    word_embed=word_embed,
+                    h_states=h,
+                    c_states=c,
+                    encoder_out=enc_b,
+                    return_alpha=return_attention,
+                )  # logits: [1, V], alpha: [1, P] or None
+
+                # 강화된 반복 억제 메커니즘
+                if len(captions[b]) >= 2:
+                    # 1. 최근 N개 단어에 대한 반복 억제 (N-gram 반복 방지)
+                    if no_repeat_ngram_size > 0 and len(captions[b]) >= no_repeat_ngram_size:
+                        # 최근 N개 단어를 확인
+                        recent_tokens = captions[b][-(no_repeat_ngram_size-1):]
+                        for token in recent_tokens:
+                            if token != start_token and token != end_token:
+                                # 반복된 토큰의 logit을 낮춤
+                                logits[0, token] = logits[0, token] / repetition_penalty
+                    
+                    # 2. 직전 토큰 강력 억제
+                    last_token = captions[b][-1]
+                    if last_token != start_token and last_token != end_token:
+                        logits[0, last_token] = logits[0, last_token] / (repetition_penalty * 2)
+
+                if temperature is None or temperature <= 0:
+                    temperature = 1.0
+                logits = logits / temperature
+
+                # 디버깅 Top-k (첫 샘플만 Step 0~3)
+                if show_topk and idx2word is not None and b == 0 and step <= 3:
+                    self._print_topk(logits.squeeze(0), idx2word, k=topk, step=step)
+
+                # Top-k sampling 또는 일반 sampling/greedy
+                if use_topk_sampling:
+                    # Top-k 중에서만 선택
+                    topk_logits, topk_indices = torch.topk(logits, min(topk, logits.size(-1)), dim=-1)
+                    topk_probs = torch.softmax(topk_logits, dim=-1)
+                    
+                    if sample:
+                        # Top-k 중에서 multinomial sampling
+                        sampled_idx = torch.multinomial(topk_probs, num_samples=1)
+                        predicted = topk_indices.gather(1, sampled_idx).view(-1)
+                    else:
+                        # Top-k 중에서 가장 높은 것 선택 (greedy)
+                        predicted = topk_indices[0, 0:1]
+                elif sample:
+                    probs = torch.softmax(logits, dim=-1)  # [1, V]
+                    predicted = torch.multinomial(probs, num_samples=1).view(-1)  # [1]
+                else:
+                    predicted = torch.argmax(logits, dim=-1)  # [1]
+
+                pred_idx = int(predicted.item())
+                captions[b].append(pred_idx)
+
+                if return_attention and alpha is not None:
+                    # alpha[0]: [P]
+                    attn_per_sample[b].append(alpha[0].detach().cpu())
+
+                if pred_idx == end_token:
+                    break
+
+                current = predicted  # [1]
+
+        # 텐서화 (길이 맞추기: 남는 건 end_token으로 패딩)
+        max_len = max(len(seq) for seq in captions)
+        out = []
+        for seq in captions:
+            seq = seq + [end_token] * (max_len - len(seq))
+            out.append(seq[:max_len])
+
+        return torch.tensor(out, dtype=torch.long, device=device), attn_per_sample
+
+    def _print_topk(self, logits, idx2word, k=10, step=0):
+        """
+        logits: [V]
+        """
+        probs = torch.softmax(logits, dim=-1)
+        topk_probs, topk_indices = torch.topk(probs, k, dim=-1)
+
+        print(f"\n[Step {step}] Top-{k} 예측:")
+        for i in range(k):
+            idx = int(topk_indices[i].item())
+            prob = float(topk_probs[i].item())
+            word = idx2word.get(idx, "<unk>")
+            print(f"  {i+1}. {word:15s} (idx: {idx:5d}, prob: {prob:.4f})")

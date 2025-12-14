@@ -30,16 +30,10 @@ class Flickr8kDataset():
         
     
     def preprocess_one_image(self, image_path, target_size=(224,224), normalize=True):
-        # 1) 이미지 열기 + RGB로 통일
+      
         img = Image.open(image_path).convert("RGB")
-        
-        # 2) 리사이즈
         img = img.resize(target_size)
-        
-        # 3) numpy 배열로 변환
-        arr = np.array(img)  # shape: (224,224,3), 값: 0~255
-        
-        # 4) 정규화(0~1)
+        arr = np.array(img)
         if normalize:
             arr = arr.astype(np.float32) / 255.0
     
@@ -54,14 +48,13 @@ class Flickr8kDataset():
         os.makedirs(OUT_DIR, exist_ok=True)
 
         TARGET_SIZE = image_size
-        NORMALIZE = True           # True면 0~1로 나눔(모델 학습에 자주 사용)
+        NORMALIZE = True
 
     
         files = [f for f in os.listdir(IMG_DIR) if f.lower().endswith((".jpg",".jpeg",".png"))]
         print("이미지 개수:", len(files))
 
         sample_name = files[0]
-        print(sample_name)
         sample_path = os.path.join(IMG_DIR, sample_name)
 
         img, arr = self.preprocess_one_image(sample_path, TARGET_SIZE, NORMALIZE)
@@ -84,8 +77,7 @@ class Flickr8kDataset():
                 img = img.resize(TARGET_SIZE)
                 img.save(out_path, format="JPEG", quality=95)
                 done += 1
-                
-                # 진행상황 출력(너무 많이 나오면 느려서 500개마다)
+
                 if (i+1) % 500 == 0:
                     print(f"{i+1}/{len(files)} 처리 중... (성공 {done}, 실패 {len(fail_list)})")
                     
@@ -108,8 +100,18 @@ class Flickr8kDataset():
                 print(f.readline().strip())
                 
         # 텍스트 파일을 CSV -> pandas DataFrame으로 변환
-        df = pd.read_csv(self.caption_file, sep=",", header=None)
-        df.columns = ["image", "caption"]
+        # 원본 파일(Flickr8k.token.txt)의 첫 줄이 헤더('image,caption')이므로 header=0으로 읽기
+        df = pd.read_csv(self.caption_file, sep=",", header=0)
+        
+        # 컬럼명 확인 및 정리
+        if 'image' not in df.columns or 'caption' not in df.columns:
+            # 헤더가 없거나 다른 형식인 경우
+            df = pd.read_csv(self.caption_file, sep=",", header=None)
+            df.columns = ["image", "caption"]
+            # 첫 줄이 헤더인 경우 제거
+            if len(df) > 0 and str(df.iloc[0]['image']).lower() == 'image':
+                df = df.iloc[1:].reset_index(drop=True)
+                print(f"⚠️ 헤더 행 제거됨")
         
         
         df["caption"] = df["caption"].astype(str).str.lower().str.strip()
@@ -161,8 +163,7 @@ class Flickr8kDataset():
 
         max_len = df["length"].max()
         print("최대 문장 길이:", max_len)        
-        max_len = 30 
-        
+        max_len = 20 
         
         pad_idx = word2idx["<pad>"]
 
@@ -282,10 +283,28 @@ class Flickr8kImageCaptionDataset(Dataset):
         self.df = pd.read_csv(captions_file)
         print(f"총 캡션 개수: {len(self.df)}")
         
+        # CSV 컬럼 확인
+        print(f"CSV 컬럼: {list(self.df.columns)}")
+        if 'image' not in self.df.columns:
+            raise ValueError(f"CSV 파일에 'image' 컬럼이 없습니다. 컬럼: {list(self.df.columns)}")
+        
+        # image 컬럼의 샘플 값 확인
+        print(f"image 컬럼 샘플 (처음 5개): {self.df['image'].head().tolist()}")
+        
+        # 빈 값이나 잘못된 값 확인
+        empty_images = self.df[self.df['image'].isna() | (self.df['image'] == '') | (self.df['image'].str.strip() == '')]
+        if len(empty_images) > 0:
+            print(f"⚠️ 경고: 빈 image 값이 {len(empty_images)}개 있습니다.")
+            print(f"빈 값 샘플: {empty_images.head()}")
+        
         # 이미지 파일명으로 그룹화 (한 이미지에 여러 캡션이 있을 수 있음)
         self.image_groups = self.df.groupby('image')
         self.unique_images = sorted(self.image_groups.groups.keys())
         print(f"고유 이미지 개수: {len(self.unique_images)}")
+        
+        # unique_images 샘플 확인
+        if len(self.unique_images) > 0:
+            print(f"이미지 파일명 샘플 (처음 5개): {self.unique_images[:5]}")
         
         # 학습/검증/테스트 분할
         np.random.seed(seed)
@@ -349,10 +368,27 @@ class Flickr8kImageCaptionDataset(Dataset):
         image_name = data_pair['image_name']
         caption = data_pair['caption']
         
+        # image_name 검증
+        if not image_name or image_name.strip() == '':
+            raise ValueError(f"idx {idx}: image_name이 비어있습니다. data_pair: {data_pair}")
+        
         # 이미지 로드
         image_path = os.path.join(self.image_dir, image_name)
         
         if not os.path.exists(image_path):
+            # 디버깅 정보 출력
+            print(f"⚠️ 이미지 파일을 찾을 수 없습니다:")
+            print(f"  - idx: {idx}")
+            print(f"  - image_name: '{image_name}'")
+            print(f"  - image_dir: {self.image_dir}")
+            print(f"  - image_path: {image_path}")
+            print(f"  - image_dir 존재 여부: {os.path.exists(self.image_dir)}")
+            if os.path.exists(self.image_dir):
+                # 디렉토리 내 파일 샘플 확인
+                files = os.listdir(self.image_dir)
+                print(f"  - image_dir 내 파일 개수: {len(files)}")
+                if len(files) > 0:
+                    print(f"  - 파일 샘플 (처음 5개): {files[:5]}")
             raise FileNotFoundError(f"이미지 파일을 찾을 수 없습니다: {image_path}")
         
         image = Image.open(image_path).convert("RGB")

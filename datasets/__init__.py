@@ -3,7 +3,7 @@
 """
 
 from .flickr8k import Flickr8kDataset, Flickr8kImageOnlyDataset, Flickr8kImageCaptionDataset
-from .coco import CocoDataset
 
-__all__ = ['Flickr8kDataset', 'CocoDataset', 'Flickr8kImageOnlyDataset', 'Flickr8kImageCaptionDataset']
+
+__all__ = ['Flickr8kDataset', 'Flickr8kImageOnlyDataset', 'Flickr8kImageCaptionDataset']
 

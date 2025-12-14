@@ -5,12 +5,12 @@ import torch.nn.functional as F
 class Stem(nn.Module):
     def __init__(self, embed_size=224, pretrained=True):
         super().__init__()
-        
+
         self.conv1 = nn.Conv2d(3, 64, kernel_size=7, stride=2, padding=3, bias=False)
         self.bn1 = nn.BatchNorm2d(64)
         self.relu = nn.ReLU(inplace=True)
         self.maxpool = nn.MaxPool2d(kernel_size=3, stride=2, padding=1)
-    
+
     def forward(self, x):
         x = self.relu(self.bn1(self.conv1(x)))
         x = self.maxpool(x)
@@ -43,10 +43,23 @@ class BasicBlock(nn.Module):
         return self.relu(out)
 
 class ResNet(nn.Module):
+    """
+    ResNet-18 (간단 구현)
+
+    변경점:
+    - embed_size가 주어졌을 때, attention을 위해 layer4의 feature map을 flatten하여
+      spatial token [B, H*W, embed_size] 형태로도 반환할 수 있게 확장.
+    - 반환 형태:
+        * embed_size is None  -> x (기존: pooled -> proj)  [B, num_classes]
+        * embed_size not None -> (global_feat, spatial_feat, (H, W))
+            - global_feat  : [B, embed_size]
+            - spatial_feat : [B, H*W, embed_size]
+            - (H, W)       : layer4 feature map의 공간 크기
+    """
 
     def __init__(self, num_classes=1000, embed_size=None, stride=1):
         super().__init__()
-    
+
         self.stem = Stem()
         self.layer1 = self._make_layer(in_channels=64, out_channels=64, block_size=2, stride=1)
         self.layer2 = self._make_layer(in_channels=64, out_channels=128, block_size=2, stride=2)
@@ -54,10 +67,19 @@ class ResNet(nn.Module):
         self.layer4 = self._make_layer(in_channels=256, out_channels=512, block_size=2, stride=2)
 
         self.avgpool = nn.AdaptiveAvgPool2d((1, 1))
+
+        self.embed_size = embed_size
         out_dim = embed_size if embed_size is not None else num_classes
+
+        # global feature projection
         self.proj = nn.Linear(512 * BasicBlock.expansion, out_dim)
+
+        # spatial feature projection (attention용)
+        if embed_size is not None:
+            self.proj_att = nn.Linear(512 * BasicBlock.expansion, embed_size)
+
         self._init_weights()
-    
+
     def _make_layer(self, in_channels, out_channels, block_size, stride=1):
 
         down = None
@@ -83,18 +105,30 @@ class ResNet(nn.Module):
                 nn.init.zeros_(m.bias)
         nn.init.normal_(self.proj.weight, std=0.02)
         nn.init.zeros_(self.proj.bias)
-
+        if hasattr(self, "proj_att"):
+            nn.init.normal_(self.proj_att.weight, std=0.02)
+            nn.init.zeros_(self.proj_att.bias)
 
     def forward(self, x):
         x = self.stem(x)
-        
+
         x = self.layer1(x)
         x = self.layer2(x)
         x = self.layer3(x)
-        x = self.layer4(x)
+        feat_map = self.layer4(x)  # [B, 512, H, W]
 
+        # global
+        pooled = self.avgpool(feat_map)
+        pooled = torch.flatten(pooled, 1)
+        global_feat = self.proj(pooled)  # [B, embed_size] 또는 [B, num_classes]
 
-        x = self.avgpool(x)
-        x = torch.flatten(x, 1)
-        x = self.proj(x)
-        return x
+        if self.embed_size is None:
+            # 기존 동작 유지
+            return global_feat
+
+        # spatial (attention 재료)
+        B, C, H, W = feat_map.shape
+        spatial = feat_map.permute(0, 2, 3, 1).contiguous().view(B, H * W, C)  # [B, HW, 512]
+        spatial = self.proj_att(spatial)  # [B, HW, embed_size]
+
+        return global_feat, spatial, (H, W)
