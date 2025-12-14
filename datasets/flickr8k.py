@@ -12,6 +12,8 @@ from collections import Counter
 import json
 import os, glob
 from torch.utils.data import Dataset
+import torch
+import ast
 
 _ROOT = os.path.dirname(os.path.dirname(__file__))
 class Flickr8kDataset():
@@ -239,3 +241,131 @@ class Flickr8kImageOnlyDataset(Dataset):
             img = self.transform(img)
         return img, path
 
+class Flickr8kImageCaptionDataset(Dataset):
+    """
+    이미지와 캡션을 함께 반환하는 Flickr8k 데이터셋
+    """
+    
+    def __init__(
+        self, 
+        image_dir: str,
+        captions_file: str,
+        transform=None,
+        split: str = "train",
+        train_split: float = 0.8,
+        val_split: float = 0.1,
+        test_split: float = 0.1,
+        seed: int = 42
+    ):
+        """
+        Args:
+            image_dir: 이미지 파일들이 있는 디렉토리 경로
+            captions_file: 캡션이 저장된 CSV 파일 경로 (captions_padded.csv)
+            transform: 이미지 전처리 변환 함수
+            split: "train", "val", "test" 중 하나
+            train_split: 학습 데이터 비율
+            val_split: 검증 데이터 비율
+            test_split: 테스트 데이터 비율
+            seed: 랜덤 시드 (재현성을 위해)
+        """
+        self.image_dir = image_dir
+        self.captions_file = captions_file
+        self.transform = transform
+        self.split = split
+        
+        # 분할 비율 검증
+        assert abs(train_split + val_split + test_split - 1.0) < 1e-6, \
+            "train_split + val_split + test_split must equal 1.0"
+        
+        # 캡션 데이터 로드
+        print(f"캡션 파일 로드 중: {captions_file}")
+        self.df = pd.read_csv(captions_file)
+        print(f"총 캡션 개수: {len(self.df)}")
+        
+        # 이미지 파일명으로 그룹화 (한 이미지에 여러 캡션이 있을 수 있음)
+        self.image_groups = self.df.groupby('image')
+        self.unique_images = sorted(self.image_groups.groups.keys())
+        print(f"고유 이미지 개수: {len(self.unique_images)}")
+        
+        # 학습/검증/테스트 분할
+        np.random.seed(seed)
+        indices = np.random.permutation(len(self.unique_images))
+        
+        train_end = int(len(self.unique_images) * train_split)
+        val_end = train_end + int(len(self.unique_images) * val_split)
+        
+        train_indices = set(indices[:train_end])
+        val_indices = set(indices[train_end:val_end])
+        test_indices = set(indices[val_end:])
+        
+        # 분할에 따라 이미지 선택
+        if split == "train":
+            self.selected_indices = [i for i in range(len(self.unique_images)) if i in train_indices]
+        elif split == "val":
+            self.selected_indices = [i for i in range(len(self.unique_images)) if i in val_indices]
+        elif split == "test":
+            self.selected_indices = [i for i in range(len(self.unique_images)) if i in test_indices]
+        else:
+            raise ValueError(f"split must be 'train', 'val', or 'test', got {split}")
+        
+        print(f"{split} split: {len(self.selected_indices)}개 이미지")
+        
+        # 선택된 이미지들의 모든 캡션을 리스트로 구성
+        self.data_pairs = []
+        for img_idx in self.selected_indices:
+            image_name = self.unique_images[img_idx]
+            image_group = self.image_groups.get_group(image_name)
+            
+            for _, row in image_group.iterrows():
+                caption_str = row['caption_padded']
+                
+                # 문자열을 리스트로 파싱
+                try:
+                    caption_list = ast.literal_eval(caption_str)
+                except:
+                    caption_list = eval(caption_str)
+                
+                self.data_pairs.append({
+                    'image_name': image_name,
+                    'caption': caption_list
+                })
+        
+        print(f"{split} split: 총 {len(self.data_pairs)}개 (이미지, 캡션) 쌍")
+    
+    def __len__(self):
+        """데이터셋 크기 반환"""
+        return len(self.data_pairs)
+    
+    def __getitem__(self, idx):
+        """
+        Args:
+            idx: 데이터 인덱스
+            
+        Returns:
+            image: 전처리된 이미지 텐서 [C, H, W]
+            caption: 캡션 텐서 [seq_length] (LongTensor)
+        """
+        data_pair = self.data_pairs[idx]
+        image_name = data_pair['image_name']
+        caption = data_pair['caption']
+        
+        # 이미지 로드
+        image_path = os.path.join(self.image_dir, image_name)
+        
+        if not os.path.exists(image_path):
+            raise FileNotFoundError(f"이미지 파일을 찾을 수 없습니다: {image_path}")
+        
+        image = Image.open(image_path).convert("RGB")
+        
+        # Transform 적용
+        if self.transform:
+            image = self.transform(image)
+        
+        # 캡션을 텐서로 변환
+        caption_tensor = torch.tensor(caption, dtype=torch.long)
+        
+        return image, caption_tensor
+    
+    def get_image_name(self, idx):
+        """인덱스에 해당하는 이미지 파일명 반환"""
+        return self.data_pairs[idx]['image_name']
