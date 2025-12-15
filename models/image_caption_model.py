@@ -83,10 +83,12 @@ class ImageCaptionModel(nn.Module):
             if isinstance(encoded, (tuple, list)) and len(encoded) >= 2:
                 features = encoded[0]
                 encoder_out = encoded[1]
+                print(f"[DEBUG] encoder_out shape: {encoder_out.shape if encoder_out is not None else None}")
                 if len(encoded) >= 3:
                     spatial_hw = encoded[2]
             else:
                 features = encoded
+                print("[⚠️ 경고] encoder_out이 None입니다! Attention이 작동하지 않습니다!")
 
             if beam_size != 1:
                 # beam은 미구현: 필요하면 붙이는게 맞고, 지금은 greedy/sampling으로 통일
@@ -183,8 +185,8 @@ class ImageCaptionModel(nn.Module):
         batch_size = features.size(0)
         print(f"[DEBUG] temperature={temperature}, sample={sample}, topk={topk}, repetition_penalty={repetition_penalty}, no_repeat_ngram={no_repeat_ngram_size}")
 
-        # 초기 상태
-        h_states, c_states = self.decoder.init_hidden_state(features)
+        # 초기 상태 (spatial feature도 함께 전달)
+        h_states, c_states = self.decoder.init_hidden_state(features, encoder_out=encoder_out)
 
         captions = [[start_token] for _ in range(batch_size)]
         attn_per_sample = [[] for _ in range(batch_size)] if return_attention else None

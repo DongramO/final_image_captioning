@@ -466,7 +466,7 @@ def main():
     _ROOT = current_dir
     
     # 하이퍼파라미터
-    FAST_TEST = True  # True로 설정하면 빠른 테스트 모드
+    FAST_TEST = False  # True로 설정하면 빠른 테스트 모드
     
     if FAST_TEST:
         # 빠른 테스트 설정
@@ -481,7 +481,7 @@ def main():
     else:
         # 실제 학습 설정
         batch_size = 128
-        num_epochs = 10
+        num_epochs = 25
         max_train_samples = None
         max_val_samples = None
         validate_every = 1
@@ -682,19 +682,17 @@ def main():
         print(f"  검증 손실: {val_loss:.4f}")
         print(f"  소요 시간: {epoch_time:.2f}초")
         
-        # 매 epoch마다 greedy 생성 결과 출력 (여러 이미지)
-        num_attention_samples = 5  # attention heatmap을 생성할 이미지 개수
+        # 매 epoch마다 greedy 생성 결과 출력 (하나의 이미지만 처리)
         print("\n" + "-"*50)
-        print(f"[Epoch {epoch+1}] Greedy 생성 결과 (샘플 {num_attention_samples}개):")
+        print(f"[Epoch {epoch+1}] Greedy 생성 결과 (attention heatmap):")
         print("-"*50)
         
         #검증 진행을 위해 model eval하고 with torch.no_grad() 사용
         model.eval()
         with torch.no_grad():
-            # 검증 데이터셋에서 랜덤하게 여러 이미지 선택
+            # 검증 데이터셋에서 랜덤하게 하나의 이미지 선택
             val_dataset_size = len(val_dataset)
-            num_samples = min(num_attention_samples, val_dataset_size)
-            sample_indices = random.sample(range(val_dataset_size), num_samples)
+            sample_idx = random.randint(0, val_dataset_size - 1)
             
             # Greedy 생성 (top-k 출력 포함)
             start_token = word2idx.get('<start>', 1)
@@ -702,66 +700,65 @@ def main():
             
             out_dir = os.path.join(checkpoint_dir, "attn_out", f"epoch_{epoch+1}")
             
-            for sample_idx, idx in enumerate(sample_indices):
-                # 검증 데이터셋에서 이미지 가져오기
-                sample_image, _ = val_dataset[idx]
-                sample_image = sample_image.unsqueeze(0).to(device)  # [1, C, H, W]
-                
-                generated_captions, attn_info = model.generate_caption(
-                    sample_image,
-                    idx2word,
-                    max_length=20,
-                    start_token=start_token,
-                    end_token=end_token,
-                    beam_size=1,
-                    show_topk=(sample_idx == 0),  # 첫 번째 이미지에서만 top-k 출력
-                    temperature=1.0,
-                    sample=False,  # Greedy search 사용
-                    topk=10,
-                    return_attention=True,
-                    repetition_penalty=1.5,  # 반복 억제 강도
-                    no_repeat_ngram_size=3,  # 최근 3개 단어 고려
-                    use_topk_sampling=False,  # 순수 greedy search (argmax)
-                )
-
-                generated_caption = generated_captions[0]
-                sample_name = val_dataset.get_image_name(idx)
-                
-                print(f"\n[샘플 {sample_idx+1}/{num_samples}] 이미지: {sample_name}")
-                print(f"  생성된 캡션: {generated_caption}")
-
-                raw_path = os.path.join(image_dir, sample_name)
-                img_pil = Image.open(raw_path).convert("RGB").resize((224, 224))
-
-                prefix = os.path.splitext(sample_name)[0]
-
-                save_attention_overlays(
-                    image=img_pil,
-                    words=attn_info[0]["words"],
-                    alphas=attn_info[0]["alphas"],
-                    spatial_hw=attn_info[0]["spatial_hw"],   # 보통 (7,7)
-                    out_dir=out_dir,
-                    prefix=prefix,
-                )
-                
-                # 붕괴 여부 확인
-                words = generated_caption.split()
-                if len(words) >= 2:
-                    # 같은 단어가 연속으로 3번 이상 나오면 붕괴
-                    consecutive_same = False
-                    for i in range(len(words) - 2):
-                        if words[i] == words[i+1] == words[i+2]:
-                            consecutive_same = True
-                            break
-                    
-                    if consecutive_same:
-                        print("  ⚠️  경고: 같은 단어가 연속으로 반복됩니다 (붕괴 가능성)")
-                    else:
-                        print("  ✓ 정상: 다양한 단어가 생성되었습니다")
-                else:
-                    print("  ⚠️  경고: 생성된 단어가 너무 적습니다")
+            # 검증 데이터셋에서 이미지 가져오기
+            sample_image, _ = val_dataset[sample_idx]
+            sample_image = sample_image.unsqueeze(0).to(device)  # [1, C, H, W]
             
-            print(f"\n[Attention] heatmap 저장 완료: {out_dir} (총 {num_samples}개 이미지)")
+            generated_captions, attn_info = model.generate_caption(
+                sample_image,
+                idx2word,
+                max_length=20,
+                start_token=start_token,
+                end_token=end_token,
+                beam_size=1,
+                show_topk=True,  # top-k 출력
+                temperature=1.0,
+                sample=False,  # Greedy search 사용
+                topk=10,
+                return_attention=True,
+                repetition_penalty=1.5,  # 반복 억제 강도
+                no_repeat_ngram_size=3,  # 최근 3개 단어 고려
+                use_topk_sampling=False,  # 순수 greedy search (argmax)
+            )
+
+            generated_caption = generated_captions[0]
+            sample_name = val_dataset.get_image_name(sample_idx)
+            
+            print(f"\n이미지: {sample_name}")
+            print(f"  생성된 캡션: {generated_caption}")
+
+            raw_path = os.path.join(image_dir, sample_name)
+            img_pil = Image.open(raw_path).convert("RGB").resize((224, 224))
+
+            prefix = os.path.splitext(sample_name)[0]
+
+            save_attention_overlays(
+                image=img_pil,
+                words=attn_info[0]["words"],
+                alphas=attn_info[0]["alphas"],
+                spatial_hw=attn_info[0]["spatial_hw"],   # 보통 (7,7)
+                out_dir=out_dir,
+                prefix=prefix,
+            )
+            
+            # 붕괴 여부 확인
+            words = generated_caption.split()
+            if len(words) >= 2:
+                # 같은 단어가 연속으로 3번 이상 나오면 붕괴
+                consecutive_same = False
+                for i in range(len(words) - 2):
+                    if words[i] == words[i+1] == words[i+2]:
+                        consecutive_same = True
+                        break
+                
+                if consecutive_same:
+                    print("  ⚠️  경고: 같은 단어가 연속으로 반복됩니다 (붕괴 가능성)")
+                else:
+                    print("  ✓ 정상: 다양한 단어가 생성되었습니다")
+            else:
+                print("  ⚠️  경고: 생성된 단어가 너무 적습니다")
+            
+            print(f"\n[Attention] heatmap 저장 완료: {out_dir}")
         
         should_save = True
 
@@ -792,7 +789,7 @@ def main():
 
     w0 = model.encoder.stem.conv1.weight.detach().clone()
     w1 = model.encoder.stem.conv1.weight.detach().clone()
-    print(torch.allclose(w0, w1))  # True면 encoder가 안 바뀜
+    # print(torch.allclose(w0, w1))  # True면 encoder가 안 바뀜
 
 
     test_dataset = Flickr8kImageCaptionDataset(

@@ -42,27 +42,50 @@ def calculate_bleu(references: List[List[str]], candidates: List[List[str]], n=4
     """
     smoothing = SmoothingFunction().method1
     
+    # 빈 캡션 필터링
+    valid_pairs = []
+    for refs, cand in zip(references, candidates):
+        # 빈 참조나 후보 캡션 제외
+        if len(cand) == 0:
+            continue
+        # 빈 참조 캡션 필터링
+        valid_refs = [ref for ref in refs if len(ref) > 0]
+        if len(valid_refs) == 0:
+            continue
+        valid_pairs.append((valid_refs, cand))
+    
+    if len(valid_pairs) == 0:
+        return {f'BLEU-{i}': 0.0 for i in range(1, n + 1)}
+    
     # 각 n-gram에 대한 BLEU 점수 계산
     bleu_scores = {}
     
     for i in range(1, n + 1):
         scores = []
-        for refs, cand in zip(references, candidates):
-            # sentence_bleu는 단일 참조용, 여러 참조가 있으면 첫 번째 사용
-            # 더 정확한 평가를 위해 corpus_bleu 사용
-            if len(refs) == 1:
-                score = sentence_bleu(refs, cand, smoothing_function=smoothing, weights=tuple([1.0/i] * i))
-            else:
-                # 여러 참조가 있는 경우 corpus_bleu 스타일로 계산
-                score = sentence_bleu(refs, cand, smoothing_function=smoothing, weights=tuple([1.0/i] * i))
-            scores.append(score)
+        for refs, cand in valid_pairs:
+            # sentence_bleu는 여러 참조를 지원하므로 그대로 사용
+            # weights는 i-gram까지만 사용 (예: i=2면 [0.5, 0.5])
+            weights = tuple([1.0/i] * i)
+            try:
+                score = sentence_bleu(refs, cand, smoothing_function=smoothing, weights=weights)
+                scores.append(score)
+            except:
+                # 계산 실패 시 0점
+                scores.append(0.0)
         
-        bleu_scores[f'BLEU-{i}'] = np.mean(scores)
+        bleu_scores[f'BLEU-{i}'] = np.mean(scores) if scores else 0.0
     
-    # 전체 BLEU-4 점수 (가중 평균)
-    weights = (0.25, 0.25, 0.25, 0.25)
-    corpus_bleu_score = corpus_bleu(references, candidates, weights=weights, smoothing_function=smoothing)
-    bleu_scores['BLEU-4'] = corpus_bleu_score
+    # BLEU-4는 이미 위에서 계산되었으므로 중복 제거
+    # 대신 corpus_bleu로 전체 코퍼스 점수도 계산 (참고용)
+    try:
+        weights = (0.25, 0.25, 0.25, 0.25)
+        valid_refs_list = [refs for refs, _ in valid_pairs]
+        valid_cands_list = [cand for _, cand in valid_pairs]
+        corpus_bleu_score = corpus_bleu(valid_refs_list, valid_cands_list, weights=weights, smoothing_function=smoothing)
+        # BLEU-4는 개별 점수로 사용 (corpus_bleu는 참고용이므로 주석 처리)
+        # bleu_scores['BLEU-4-corpus'] = corpus_bleu_score
+    except:
+        pass
     
     return bleu_scores
 
@@ -81,14 +104,29 @@ def calculate_meteor(references: List[List[str]], candidates: List[List[str]]):
     scores = []
     
     for refs, cand in zip(references, candidates):
+        # 빈 캡션 처리
+        if len(cand) == 0:
+            scores.append(0.0)
+            continue
+        
+        # 빈 참조 필터링
+        valid_refs = [ref for ref in refs if len(ref) > 0]
+        if len(valid_refs) == 0:
+            scores.append(0.0)
+            continue
+        
         # METEOR는 단일 참조와 비교하므로, 여러 참조 중 최고 점수 사용
         best_score = 0.0
-        for ref in refs:
+        for ref in valid_refs:
             try:
                 score = meteor_score([ref], cand)
-                best_score = max(best_score, score)
-            except:
-                # METEOR 계산 실패 시 0점
+                if not np.isnan(score) and not np.isinf(score):
+                    best_score = max(best_score, score)
+            except (ValueError, ZeroDivisionError, AttributeError) as e:
+                # 특정 예외만 처리 (모든 예외를 무시하지 않음)
+                continue
+            except Exception:
+                # 기타 예외는 무시
                 pass
         scores.append(best_score)
     
@@ -123,8 +161,19 @@ def calculate_rouge(references: List[List[str]], candidates: List[List[str]]):
     rouge_l_scores = []
     
     for refs, cand in zip(references, candidates):
+        # 빈 캡션 처리
+        if len(cand) == 0:
+            rouge_l_scores.append(0.0)
+            continue
+        
+        # 빈 참조 필터링
+        valid_refs = [ref for ref in refs if len(ref) > 0]
+        if len(valid_refs) == 0:
+            rouge_l_scores.append(0.0)
+            continue
+        
         best_score = 0.0
-        for ref in refs:
+        for ref in valid_refs:
             lcs = lcs_length(ref, cand)
             if len(ref) == 0 or len(cand) == 0:
                 score = 0.0
@@ -145,73 +194,121 @@ def calculate_rouge(references: List[List[str]], candidates: List[List[str]]):
 
 def calculate_cider(references: List[List[str]], candidates: List[List[str]]):
     """
-    CIDEr 점수 계산 (간단한 구현)
+    CIDEr 점수 계산 (수정된 구현)
     
     Args:
         references: 참조 캡션 리스트
         candidates: 생성된 캡션 리스트
         
     Returns:
-        cider_score: CIDEr 점수
+        cider_score: CIDEr 점수 (0 이상)
     """
-    def compute_tf_idf(sentences, n=4):
-        """TF-IDF 계산"""
-        # 모든 n-gram 수집
-        all_ngrams = []
-        for sent in sentences:
-            for i in range(len(sent) - n + 1):
-                all_ngrams.append(tuple(sent[i:i+n]))
+    # 전체 코퍼스 수집 (모든 참조 캡션)
+    all_corpus_sentences = []
+    for refs in references:
+        all_corpus_sentences.extend(refs)
+    
+    # 전체 코퍼스 크기
+    corpus_size = len(all_corpus_sentences)
+    if corpus_size == 0:
+        return 0.0
+    
+    def compute_tf_idf_vector(sentence, corpus_doc_freq, corpus_size, n=4):
+        """단일 문장에 대한 TF-IDF 벡터 계산"""
+        # 문장이 n보다 짧으면 빈 벡터 반환
+        if len(sentence) < n:
+            return {}
         
-        # 문서 빈도 계산
+        # 문장의 n-gram TF 계산
+        sent_tf = Counter()
+        for i in range(len(sentence) - n + 1):
+            ngram = tuple(sentence[i:i+n])
+            sent_tf[ngram] += 1
+        
+        # TF-IDF 벡터 계산
+        tf_idf = {}
+        for ngram, tf in sent_tf.items():
+            df = corpus_doc_freq.get(ngram, 0)
+            # IDF 계산: log((N + 1) / (df + 1)) + 1 (음수 방지)
+            idf = np.log((corpus_size + 1) / (df + 1)) + 1
+            tf_idf[ngram] = tf * idf
+        
+        return tf_idf
+    
+    def compute_corpus_doc_freq(sentences, n=4):
+        """전체 코퍼스에 대한 문서 빈도 계산"""
         doc_freq = Counter()
         for sent in sentences:
+            # 문장이 n보다 짧으면 건너뛰기
+            if len(sent) < n:
+                continue
             sent_ngrams = set()
             for i in range(len(sent) - n + 1):
                 sent_ngrams.add(tuple(sent[i:i+n]))
             for ngram in sent_ngrams:
                 doc_freq[ngram] += 1
-        
-        # TF-IDF 계산
-        num_docs = len(sentences)
-        tf_idf = {}
-        for sent in sentences:
-            sent_tf = Counter()
-            for i in range(len(sent) - n + 1):
-                ngram = tuple(sent[i:i+n])
-                sent_tf[ngram] += 1
-            
-            for ngram, tf in sent_tf.items():
-                df = doc_freq[ngram]
-                idf = np.log(num_docs / (df + 1e-10))
-                tf_idf[ngram] = tf * idf
-        
-        return tf_idf
+        return doc_freq
     
-    # 간단한 CIDEr 구현 (정확한 구현은 pycocotools 사용 권장)
-    scores = []
+    # 1-4 gram에 대해 각각 계산하고 평균
+    ngram_scores = []
     
-    for refs, cand in zip(references, candidates):
-        # 참조 캡션들의 TF-IDF 계산
-        all_refs = refs
-        ref_tfidf = compute_tf_idf(all_refs)
+    for n in range(1, 5):  # 1-gram to 4-gram
+        # 전체 코퍼스에 대한 문서 빈도 계산
+        corpus_doc_freq = compute_corpus_doc_freq(all_corpus_sentences, n=n)
         
-        # 후보 캡션의 TF-IDF 계산
-        cand_tfidf = compute_tf_idf([cand])
+        ngram_level_scores = []
         
-        # 코사인 유사도 계산
-        common_ngrams = set(ref_tfidf.keys()) & set(cand_tfidf.keys())
-        if len(common_ngrams) == 0:
-            score = 0.0
-        else:
-            dot_product = sum(ref_tfidf.get(ngram, 0) * cand_tfidf.get(ngram, 0) for ngram in common_ngrams)
-            ref_norm = np.sqrt(sum(v**2 for v in ref_tfidf.values()))
-            cand_norm = np.sqrt(sum(v**2 for v in cand_tfidf.values()))
+        for refs, cand in zip(references, candidates):
+            # 빈 캡션 처리
+            if len(cand) == 0:
+                ngram_level_scores.append(0.0)
+                continue
             
-            if ref_norm == 0 or cand_norm == 0:
+            # 빈 참조 필터링
+            valid_refs = [ref for ref in refs if len(ref) > 0]
+            if len(valid_refs) == 0:
+                ngram_level_scores.append(0.0)
+                continue
+            
+            # 참조 캡션들의 평균 TF-IDF 벡터 계산
+            ref_vectors = []
+            for ref in valid_refs:
+                ref_vec = compute_tf_idf_vector(ref, corpus_doc_freq, corpus_size, n=n)
+                ref_vectors.append(ref_vec)
+            
+            # 참조 벡터들의 평균 계산
+            all_ref_ngrams = set()
+            for vec in ref_vectors:
+                all_ref_ngrams.update(vec.keys())
+            
+            ref_avg_tfidf = {}
+            for ngram in all_ref_ngrams:
+                avg_val = np.mean([vec.get(ngram, 0) for vec in ref_vectors])
+                if avg_val > 0:
+                    ref_avg_tfidf[ngram] = avg_val
+            
+            # 후보 캡션의 TF-IDF 벡터 계산
+            cand_tfidf = compute_tf_idf_vector(cand, corpus_doc_freq, corpus_size, n=n)
+            
+            # 코사인 유사도 계산
+            common_ngrams = set(ref_avg_tfidf.keys()) & set(cand_tfidf.keys())
+            if len(common_ngrams) == 0:
                 score = 0.0
             else:
-                score = dot_product / (ref_norm * cand_norm)
+                dot_product = sum(ref_avg_tfidf.get(ngram, 0) * cand_tfidf.get(ngram, 0) for ngram in common_ngrams)
+                ref_norm = np.sqrt(sum(v**2 for v in ref_avg_tfidf.values()))
+                cand_norm = np.sqrt(sum(v**2 for v in cand_tfidf.values()))
+                
+                if ref_norm == 0 or cand_norm == 0:
+                    score = 0.0
+                else:
+                    score = dot_product / (ref_norm * cand_norm)
+                    # 코사인 유사도는 -1~1 범위이지만, TF-IDF는 모두 양수이므로 0~1 범위
+                    score = max(0.0, score)  # 음수 방지
+            
+            ngram_level_scores.append(score)
         
-        scores.append(score)
+        ngram_scores.append(np.mean(ngram_level_scores) if ngram_level_scores else 0.0)
     
-    return np.mean(scores) if scores else 0.0
+    # 1-4 gram 점수의 평균
+    return np.mean(ngram_scores) if ngram_scores else 0.0

@@ -15,25 +15,48 @@ import torch.nn as nn
 
 class BahdanauAttention(nn.Module):
     """
-    Additive(Bahdanau) Attention
-
+    Additive(Bahdanau) Attention (개선 버전)
+    
     encoder_out: [B, P, E]  (P = H*W)
     decoder_h  : [B, H]
     """
     def __init__(self, encoder_dim: int, decoder_dim: int, attn_dim: int):
         super().__init__()
+        self.attn_dim = attn_dim
         self.W_enc = nn.Linear(encoder_dim, attn_dim)
         self.W_dec = nn.Linear(decoder_dim, attn_dim)
         self.v = nn.Linear(attn_dim, 1)
+        
+        # Attention 가중치 초기화 개선
+        self._init_weights()
+    
+    def _init_weights(self):
+        """Attention 가중치를 제대로 초기화"""
+        nn.init.xavier_uniform_(self.W_enc.weight)
+        nn.init.zeros_(self.W_enc.bias)
+        nn.init.xavier_uniform_(self.W_dec.weight)
+        nn.init.zeros_(self.W_dec.bias)
+        nn.init.xavier_uniform_(self.v.weight)
+        nn.init.zeros_(self.v.bias)
 
     def forward(self, encoder_out, decoder_h):
         enc_proj = self.W_enc(encoder_out)               # [B, P, A]
         dec_proj = self.W_dec(decoder_h).unsqueeze(1)    # [B, 1, A]
+        
+        # Attention score 계산 (더 안정적으로)
         scores = self.v(torch.tanh(enc_proj + dec_proj)).squeeze(-1)  # [B, P]
+        
+        # Temperature scaling으로 attention을 더 날카롭게 (더 작은 temperature 사용)
+        # sqrt scaling보다 더 작은 값으로 더 날카롭게 만듦
+        temperature = (self.attn_dim ** 0.25)  # sqrt보다 더 작은 값
+        scores = scores / temperature
+        
         alpha = torch.softmax(scores, dim=1)             # [B, P]
+        
+        # Context 계산 (더 강하게 반영)
         context = (encoder_out * alpha.unsqueeze(-1)).sum(dim=1)       # [B, E]
+        
         return context, alpha
-
 
 class CaptionDecoder(nn.Module):
 
@@ -62,10 +85,28 @@ class CaptionDecoder(nn.Module):
 
         self.init_h = nn.Linear(embed_size, hidden_size)
         self.init_c = nn.Linear(embed_size, hidden_size)
+        
+        # Context 가중치를 학습 가능한 파라미터로 변경
+        self.context_weight = nn.Parameter(torch.ones(1) * 2.0)  # 초기값 2.0
 
-    def init_hidden_state(self, features):
+    def init_hidden_state(self, features, encoder_out=None):
+        """
+        초기 hidden state 계산
+        - features: global feature [B, E]
+        - encoder_out: spatial features [B, P, E] (optional)
+        """
+        # Global feature 사용
         h0 = self.init_h(features)
         c0 = self.init_c(features)
+        
+        # Spatial feature가 있으면 평균을 구해서 추가 반영
+        if encoder_out is not None:
+            # Spatial feature의 평균 [B, E]
+            spatial_mean = encoder_out.mean(dim=1)  # [B, P, E] -> [B, E]
+            # Global과 spatial의 가중 평균 (global 70%, spatial 30%)
+            h0 = h0 + 0.3 * self.init_h(spatial_mean)  # spatial 정보 추가 반영
+            c0 = c0 + 0.3 * self.init_c(spatial_mean)
+        
         h_states = [h0.clone() for _ in range(self.num_layers)]
         c_states = [c0.clone() for _ in range(self.num_layers)]
         return h_states, c_states
@@ -80,7 +121,14 @@ class CaptionDecoder(nn.Module):
 
     def step(self, word_embed, h_states, c_states, encoder_out=None, return_alpha=False):
         context, alpha = self._build_context(encoder_out, h_states[-1], word_embed)
-        x_t = torch.cat([word_embed, context], dim=-1)  # [B, 2E]
+        
+        # Context를 더 강하게 반영 (학습 가능한 가중치 사용)
+        if context is not None:
+            # 학습 가능한 가중치를 사용하여 context 강화
+            context_weighted = context * torch.clamp(self.context_weight, min=1.0, max=3.0)
+            x_t = torch.cat([word_embed, context_weighted], dim=-1)  # [B, 2E]
+        else:
+            x_t = torch.cat([word_embed, word_embed.new_zeros(word_embed.size(0), self.embed_size)], dim=-1)
 
         for layer_idx in range(self.num_layers):
             h_states[layer_idx], c_states[layer_idx] = self.lstm_cells[layer_idx](x_t, h_states[layer_idx], c_states[layer_idx])
@@ -94,7 +142,7 @@ class CaptionDecoder(nn.Module):
         return logits, h_states, c_states, None
 
     def forward(self, features, captions, lengths=None, encoder_out=None, return_alpha=False):
-        h_states, c_states = self.init_hidden_state(features)
+        h_states, c_states = self.init_hidden_state(features, encoder_out=encoder_out)
 
         embeddings = self.embedding(captions[:, :-1])  # [B, T, E]
         embeddings = self.dropout(embeddings)
