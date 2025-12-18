@@ -192,9 +192,81 @@ def calculate_rouge(references: List[List[str]], candidates: List[List[str]]):
     }
 
 
+def _prepare_pycocoevalcap_format(references: List[List[str]], candidates: List[List[str]]):
+    """
+    pycocoevalcap 형식으로 데이터 변환
+    
+    pycocoevalcap은 문자열 리스트를 기대합니다:
+    - gts: {image_id: ["caption1", "caption2", ...]}
+    - res: {image_id: ["caption"]}
+    
+    Returns:
+        gts: {image_id: ["caption1", "caption2", ...]}
+        res: {image_id: ["caption"]}
+    """
+    gts = {}
+    res = {}
+    
+    for i, (refs, cand) in enumerate(zip(references, candidates)):
+        # image_id는 문자열로 변환 (pycocoevalcap 요구사항)
+        image_id = str(i)
+        
+        # 참조 캡션들 (단어 리스트를 문자열로 변환)
+        gts[image_id] = [" ".join(ref) for ref in refs if len(ref) > 0]
+        
+        # 생성된 캡션 (단어 리스트를 문자열로 변환)
+        if len(cand) > 0:
+            res[image_id] = [" ".join(cand)]
+        else:
+            res[image_id] = [""]
+    
+    return gts, res
+
+
 def calculate_cider(references: List[List[str]], candidates: List[List[str]]):
     """
-    CIDEr 점수 계산 (수정된 구현)
+    CIDEr 점수 계산 (표준 라이브러리: pycocoevalcap 사용)
+    
+    Args:
+        references: 참조 캡션 리스트 (각 이미지당 여러 개의 참조 캡션)
+        candidates: 생성된 캡션 리스트
+        
+    Returns:
+        cider_score: CIDEr 점수 (0 이상)
+    """
+    try:
+        from pycocoevalcap.cider.cider import Cider
+        
+        # pycocoevalcap 형식으로 변환
+        gts, res = _prepare_pycocoevalcap_format(references, candidates)
+        
+        # CIDEr 계산기 생성 및 점수 계산
+        scorer = Cider()
+        score, _ = scorer.compute_score(gts, res)
+        
+        # score는 numpy array일 수 있으므로 float로 변환
+        if isinstance(score, (list, np.ndarray)):
+            score = float(score[0]) if len(score) > 0 else 0.0
+        else:
+            score = float(score)
+        
+        return max(0.0, score)  # 음수 방지
+        
+    except ImportError:
+        # pycocoevalcap이 설치되지 않은 경우 fallback 사용
+        print("⚠️ pycocoevalcap이 설치되지 않아 fallback CIDEr 계산을 사용합니다.")
+        print("  표준 라이브러리를 사용하려면: pip install pycocoevalcap")
+        return _calculate_cider_fallback(references, candidates)
+    except Exception as e:
+        # 기타 오류 발생 시 fallback 사용
+        print(f"⚠️ pycocoevalcap CIDEr 계산 실패: {e}")
+        print("  fallback CIDEr 계산을 사용합니다.")
+        return _calculate_cider_fallback(references, candidates)
+
+
+def _calculate_cider_fallback(references: List[List[str]], candidates: List[List[str]]):
+    """
+    CIDEr 점수 계산 (fallback 구현)
     
     Args:
         references: 참조 캡션 리스트

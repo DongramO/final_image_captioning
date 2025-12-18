@@ -162,8 +162,9 @@ def train_one_epoch(model, dataloader, criterion, optimizer, device, epoch, prin
     progress_bar = tqdm(dataloader, desc=f"Epoch {epoch} [Train]")
     
     for batch_idx, (images, captions) in enumerate(progress_bar):
-        images = images.to(device)
-        captions = captions.to(device)
+        # non_blocking=True: CPU-GPU 전송을 비동기로 처리 (데이터 로딩과 병렬)
+        images = images.to(device, non_blocking=True)
+        captions = captions.to(device, non_blocking=True)
         
         # Forward pass
         outputs = model(images, captions)
@@ -230,8 +231,8 @@ def validate(model, dataloader, criterion, device, idx2word=None, show_topk=Fals
     
     with torch.no_grad():
         for batch_idx, (images, captions) in enumerate(tqdm(dataloader, desc="Validation")):
-            images = images.to(device)
-            captions = captions.to(device)
+            images = images.to(device, non_blocking=True)
+            captions = captions.to(device, non_blocking=True)
             
             # Forward pass
             outputs = model(images, captions)
@@ -348,7 +349,7 @@ def evaluate_model(model, dataloader, device, idx2word, word2idx, max_length=20,
     print("\n캡션 생성 중...")
     with torch.no_grad():
         for batch_idx, (images, captions) in enumerate(tqdm(dataloader, desc="Evaluating")):
-            images = images.to(device)
+            images = images.to(device, non_blocking=True)
             
             # 캡션 생성
             result = model.generate_caption(
@@ -470,7 +471,7 @@ def main():
     
     if FAST_TEST:
         # 빠른 테스트 설정
-        batch_size = 128
+        batch_size = 256
         num_epochs = 3
         max_train_samples = 1000
         max_val_samples = 200
@@ -480,7 +481,7 @@ def main():
         num_layers = 1
     else:
         # 실제 학습 설정
-        batch_size = 128
+        batch_size = 256
         num_epochs = 25
         max_train_samples = None
         max_val_samples = None
@@ -571,23 +572,38 @@ def main():
     if analyze_frequency:
         analyze_word_frequency(train_dataset, idx2word, top_n=20)
     
-    print('cuda is available ??????????????: ', torch.cuda.is_available())
+    # GPU 설정 확인 및 최적화
+    if torch.cuda.is_available():
+        print(f"\n✓ GPU 사용 가능: {torch.cuda.get_device_name(0)}")
+        print(f"  CUDA 버전: {torch.version.cuda}")
+        print(f"  GPU 메모리: {torch.cuda.get_device_properties(0).total_memory / 1024**3:.2f} GB")
+        # cuDNN 벤치마크 활성화 (입력 크기가 고정된 경우 성능 향상)
+        torch.backends.cudnn.benchmark = True
+    else:
+        print("\n⚠ GPU를 사용할 수 없습니다. CPU 모드로 실행됩니다.")
+        print("  GPU를 사용하려면 CUDA가 설치된 PyTorch를 설치하세요:")
+        print("  pip install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu124")
     
-    # DataLoader 생성
+    # DataLoader 생성 (GPU 최적화)
+    num_workers = 8 if torch.cuda.is_available() and not FAST_TEST else (4 if not FAST_TEST else 0)
     train_loader = DataLoader(
         train_dataset,
         batch_size=batch_size,
         shuffle=True,
-        num_workers=4 if not FAST_TEST else 0,
-        pin_memory=True if torch.cuda.is_available() else False
+        num_workers=num_workers,
+        pin_memory=True if torch.cuda.is_available() else False,
+        prefetch_factor=2 if num_workers > 0 else None,
+        persistent_workers=True if num_workers > 0 and not FAST_TEST else False
     )
     
     val_loader = DataLoader(
         val_dataset,
         batch_size=batch_size,
         shuffle=False,
-        num_workers=4 if not FAST_TEST else 0,
-        pin_memory=True if torch.cuda.is_available() else False
+        num_workers=num_workers,
+        pin_memory=True if torch.cuda.is_available() else False,
+        prefetch_factor=2 if num_workers > 0 else None,
+        persistent_workers=True if num_workers > 0 and not FAST_TEST else False
     )
     
     # 모델 생성
@@ -702,7 +718,7 @@ def main():
             
             # 검증 데이터셋에서 이미지 가져오기
             sample_image, _ = val_dataset[sample_idx]
-            sample_image = sample_image.unsqueeze(0).to(device)  # [1, C, H, W]
+            sample_image = sample_image.unsqueeze(0).to(device, non_blocking=True)  # [1, C, H, W]
             
             generated_captions, attn_info = model.generate_caption(
                 sample_image,
@@ -799,12 +815,15 @@ def main():
         split="test"
     )
     
+    num_workers = 8 if torch.cuda.is_available() and not FAST_TEST else (4 if not FAST_TEST else 0)
     test_loader = DataLoader(
         test_dataset,
         batch_size=batch_size,
         shuffle=False,
-        num_workers=4 if not FAST_TEST else 0,
-        pin_memory=True if torch.cuda.is_available() else False
+        num_workers=num_workers,
+        pin_memory=True if torch.cuda.is_available() else False,
+        prefetch_factor=2 if num_workers > 0 else None,
+        persistent_workers=True if num_workers > 0 and not FAST_TEST else False
     )
     
     # 평가 실행

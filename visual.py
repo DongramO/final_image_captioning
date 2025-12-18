@@ -8,6 +8,7 @@ from PIL import Image
 import numpy as np
 import random
 import glob
+import textwrap
 
 import modules
 from modules.decoder import CaptionDecoder
@@ -58,7 +59,7 @@ def visualize_predictions(
     end_token=2
 ):
     """
-    테스트 셋의 이미지와 예측 캡션을 시각화
+    테스트 셋의 이미지와 예측 캡션을 시각화 (개선된 레이아웃)
     
     Args:
         model: 학습된 모델
@@ -74,9 +75,9 @@ def visualize_predictions(
     # 랜덤 샘플 선택
     indices = random.sample(range(len(test_dataset)), min(num_samples, len(test_dataset)))
     
-    fig, axes = plt.subplots(num_samples, 1, figsize=(12, 4 * num_samples))
-    if num_samples == 1:
-        axes = [axes]
+    # 개선된 레이아웃: 각 샘플당 이미지와 텍스트 영역을 분리
+    fig = plt.figure(figsize=(14, 5 * num_samples))
+    gs = fig.add_gridspec(num_samples, 2, width_ratios=[1.2, 1], hspace=0.3, wspace=0.2)
     
     with torch.no_grad():
         for i, idx in enumerate(indices):
@@ -133,18 +134,73 @@ def visualize_predictions(
             # 이미지 denormalize
             img_display = denormalize_image(image)
             
-            # 시각화
-            axes[i].imshow(img_display)
-            axes[i].axis('off')
-            axes[i].set_title(
-                f"이미지: {image_name}\n"
-                f"실제 캡션: {true_caption_str}\n"
-                f"예측 캡션: {predicted_caption}",
-                fontsize=10
-            )
+            # 이미지 영역
+            ax_img = fig.add_subplot(gs[i, 0])
+            ax_img.imshow(img_display)
+            ax_img.axis('off')
+            ax_img.set_title(f"샘플 {i+1}: {image_name}", fontsize=12, fontweight='bold', pad=10)
+            
+            # 텍스트 영역
+            ax_text = fig.add_subplot(gs[i, 1])
+            ax_text.axis('off')
+            ax_text.set_xlim(0, 1)
+            ax_text.set_ylim(0, 1)
+            
+            # 텍스트 줄바꿈 (최대 40자로 줄여서 공간 확보)
+            wrapped_true = textwrap.fill(true_caption_str, width=40)
+            wrapped_pred = textwrap.fill(predicted_caption, width=40)
+            
+            # 실제 캡션 (녹색) - 상단
+            y_label_top = 0.95
+            y_text_top = 0.80
+            
+            # 라벨 텍스트 (x 좌표를 0.01로 조정하여 여백 확보)
+            ax_text.text(0.01, y_label_top, "실제 캡션 (Ground Truth):", 
+                        fontsize=11, fontweight='bold', color='#2e7d32',
+                        transform=ax_text.transAxes, verticalalignment='top',
+                        horizontalalignment='left', family='Malgun Gothic',
+                        clip_on=False)
+            
+            # 실제 캡션 텍스트 박스
+            true_lines = wrapped_true.split('\n')
+            true_height = max(0.12, len(true_lines) * 0.04)
+            ax_text.text(0.01, y_text_top, wrapped_true,
+                        fontsize=10, color='#1b5e20',
+                        transform=ax_text.transAxes, verticalalignment='top',
+                        horizontalalignment='left', family='Malgun Gothic',
+                        bbox=dict(boxstyle='round,pad=0.8', facecolor='#e8f5e9', 
+                                edgecolor='#2e7d32', linewidth=1.5, alpha=0.8),
+                        clip_on=False)
+            
+            # 구분선 (axes 좌표계 사용)
+            ax_text.plot([0.01, 0.99], [0.5, 0.5], color='gray', linestyle='--', 
+                        linewidth=1, alpha=0.6, transform=ax_text.transAxes,
+                        clip_on=False)
+            
+            # 예측 캡션 (파란색) - 하단
+            y_label_bottom = 0.45
+            y_text_bottom = 0.30
+            
+            # 라벨 텍스트
+            ax_text.text(0.01, y_label_bottom, "예측 캡션 (Prediction):", 
+                        fontsize=11, fontweight='bold', color='#1565c0',
+                        transform=ax_text.transAxes, verticalalignment='top',
+                        horizontalalignment='left', family='Malgun Gothic',
+                        clip_on=False)
+            
+            # 예측 캡션 텍스트 박스
+            pred_lines = wrapped_pred.split('\n')
+            pred_height = max(0.12, len(pred_lines) * 0.04)
+            ax_text.text(0.01, y_text_bottom, wrapped_pred,
+                        fontsize=10, color='#0d47a1',
+                        transform=ax_text.transAxes, verticalalignment='top',
+                        horizontalalignment='left', family='Malgun Gothic',
+                        bbox=dict(boxstyle='round,pad=0.8', facecolor='#e3f2fd', 
+                                edgecolor='#1565c0', linewidth=1.5, alpha=0.8),
+                        clip_on=False)
     
-    plt.tight_layout()
-    plt.savefig('test_predictions.png', dpi=150, bbox_inches='tight')
+    plt.suptitle('이미지 캡셔닝 예측 결과', fontsize=16, fontweight='bold', y=0.995)
+    plt.savefig('test_predictions.png', dpi=200, bbox_inches='tight', facecolor='white')
     print("시각화 저장 완료: test_predictions.png")
     plt.show()
 
@@ -233,13 +289,16 @@ def load_model(checkpoint_path, vocab_size, device):
 
 def main():
     # 설정
-    _ROOT = os.path.dirname(os.path.dirname(__file__))
+    # 현재 파일의 디렉토리를 기준으로 프로젝트 루트 찾기 (main.py와 동일)
+    current_dir = os.path.dirname(os.path.abspath(__file__))
+    # 프로젝트 루트는 visual.py가 있는 디렉토리 (final_image_captioning)
+    _ROOT = current_dir
     
     # 경로 설정
-    image_dir = os.path.join(_ROOT, "final_image_captioning", "datasets", "data", "Flickr8k_images")
-    captions_file = os.path.join(_ROOT, "final_image_captioning", "datasets", "data", "captions_preprocessed", "captions_padded.csv")
-    word2idx_path = os.path.join(_ROOT, "final_image_captioning", "datasets", "data", "captions_preprocessed", "word2idx.json")
-    idx2word_path = os.path.join(_ROOT, "final_image_captioning", "datasets", "data", "captions_preprocessed", "idx2word.json")
+    image_dir = os.path.join(_ROOT, "datasets", "data", "Flickr8k_images")
+    captions_file = os.path.join(_ROOT, "datasets", "data", "captions_preprocessed", "captions_padded.csv")
+    word2idx_path = os.path.join(_ROOT, "datasets", "data", "captions_preprocessed", "word2idx.json")
+    idx2word_path = os.path.join(_ROOT, "datasets", "data", "captions_preprocessed", "idx2word.json")
     checkpoint_dir = os.path.join(_ROOT, "checkpoints")
     
     # 체크포인트 파일 찾기
